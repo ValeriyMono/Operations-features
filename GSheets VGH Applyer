@@ -5,6 +5,8 @@ function onOpen() {
     .addItem('Вставити МІН значення', 'runFillMin')
     .addItem('Вставити СЕРЕДНЄ значення', 'runFillAvg')
     .addItem('Вставити МАКС значення', 'runFillMax')
+    .addItem('Показати відхилення від норми', 'highlightOutOfRangeValues')
+    
     .addToUi();
 }
 
@@ -124,4 +126,69 @@ function fillDimensionsByCategory(choice) {
   }
 
   SpreadsheetApp.getUi().alert(`Операція завершена. Заповнено ${filledCount} значень.`);
+}
+
+function highlightOutOfRangeValues() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sourceSheet = ss.getSheetByName('Додавання ВГХ');
+  const assetsSheet = ss.getSheetByName('Assets');
+
+  const sourceData = sourceSheet.getDataRange().getValues();
+  const headers = sourceData[0];
+  const rows = sourceData.slice(1);
+
+  const assetsData = assetsSheet.getDataRange().getValues().slice(1);
+
+  const categoryIndex = headers.indexOf('categories');
+  const paramIndexes = {
+    full_weight: headers.indexOf('full_weight'),
+    package_height: headers.indexOf('package_height'),
+    package_length: headers.indexOf('package_length'),
+    package_width: headers.indexOf('package_width'),
+  };
+
+  const assetMap = {};
+  for (const [cat, param, min, avg, max] of assetsData) {
+    if (!assetMap[cat]) assetMap[cat] = {};
+    assetMap[cat][param] = {
+      min: parseFloat(min),
+      max: parseFloat(max)
+    };
+  }
+
+  const problemCol = headers.length + 1;
+  const bgColors = [];
+  const statusValues = [];
+
+  rows.forEach((row, i) => {
+    const cat = row[categoryIndex];
+    const bgRow = new Array(headers.length).fill(null);
+    let hasProblem = false;
+
+    if (!cat || !assetMap[cat]) {
+      bgColors.push(bgRow);
+      statusValues.push(['']);
+      return;
+    }
+
+    for (const param in paramIndexes) {
+      const col = paramIndexes[param];
+      const value = parseFloat(row[col]);
+      const limits = assetMap[cat][param];
+      if (!isNaN(value) && limits) {
+        if (value < limits.min || value > limits.max) {
+          bgRow[col] = '#f4cccc'; // червоне підсвічування
+          hasProblem = true;
+        }
+      }
+    }
+
+    bgColors.push(bgRow);
+    statusValues.push([hasProblem ? 'Проблема' : '']);
+  });
+
+  sourceSheet.getRange(2, 1, bgColors.length, headers.length).setBackgrounds(bgColors);
+  sourceSheet.getRange(2, problemCol, statusValues.length, 1).setValues(statusValues);
+
+  SpreadsheetApp.getUi().alert('Перевірка завершена: поза межами — підсвічено червоним.');
 }
