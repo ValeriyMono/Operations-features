@@ -1,0 +1,1720 @@
+import sys
+import os
+import re
+import copy
+from typing import Dict, Set, List, Optional, Tuple, Generator
+from dataclasses import dataclass
+from pathlib import Path
+from lxml import etree
+import csv
+from collections import defaultdict
+from urllib.parse import unquote
+from PyQt6.QtWidgets import QRadioButton
+
+from PyQt6.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QPushButton,
+    QLabel,
+    QVBoxLayout,
+    QHBoxLayout,
+    QWidget,
+    QFileDialog,
+    QLineEdit,
+    QMessageBox,
+    QListWidget,
+    QListWidgetItem,
+    QCheckBox,
+    QFrame,
+    QTextEdit,
+    QTabWidget,
+    QDialog,
+    QProgressBar,
+    QStatusBar,
+    QProgressDialog,
+    QComboBox,
+)
+from PyQt6.QtCore import Qt, QMimeData, QThread, pyqtSignal
+from PyQt6.QtGui import QClipboard, QDragEnterEvent, QDropEvent
+
+# Константи
+CONFIG = {
+    "WINDOW_SIZE": (800, 600),
+    "DEFAULT_ENCODING": "utf-8",
+    "CSV_ENCODING": "utf-8-sig",
+    "PRIORITY_FIELDS": ["id", "code", "vendor_code", "model", "title"],
+    "BASIC_HEADERS": [
+        "category",
+        "brand",
+        "barcode",
+        "availability",
+        "weight",
+        "height",
+        "width",
+        "length",
+        "description",
+    ],
+    "XML_SCHEMA_PATH": "schema.xsd",
+    "BUFFER_SIZE": 1000,  # Розмір буфера для операцій з файлами
+}
+
+
+@dataclass
+class CategoryData:
+    """Клас для зберігання даних про категорію."""
+
+    name: str
+    count: int
+    is_selected: bool = False
+
+
+class XMLProcessingWorker(QThread):
+    """Оптимізований клас для обробки XML в окремому потоці."""
+
+    progress = pyqtSignal(int)
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, file_path: str):
+        super().__init__()
+        self.file_path = file_path
+
+    def run(self):
+        try:
+            # Спрощений підхід - просто рахуємо категорії, ігноруючи помилки
+            categories = defaultdict(int)
+            processed = 0
+
+            # Налаштовуємо максимально толерантний парсер
+            parser = etree.XMLParser(recover=True, huge_tree=True)
+
+            try:
+                tree = etree.parse(self.file_path, parser)
+                for offer in tree.findall(".//offer"):
+                    try:
+                        category = offer.find("category")
+                        if category is not None and category.text:
+                            categories[category.text.strip()] += 1
+                        processed += 1
+                        self.progress.emit(
+                            processed % 100
+                        )  # Просто показуємо якийсь прогрес
+                    except:
+                        continue
+
+                self.finished.emit(dict(categories))
+            except:
+                # Якщо не вдалося спарсити через etree.parse,
+                # спробуємо простіший підхід через пошук в тексті
+                with open(self.file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                    # Шукаємо всі категорії через простий текстовий пошук
+                    category_matches = re.findall(
+                        r"<category>(.*?)</category>", content
+                    )
+                    for cat in category_matches:
+                        if cat.strip():
+                            categories[cat.strip()] += 1
+
+                    self.finished.emit(dict(categories))
+
+        except Exception as e:
+            # Навіть якщо сталася помилка, спробуємо відправити те, що встигли знайти
+            if categories:
+                self.finished.emit(dict(categories))
+            else:
+                self.error.emit("Не вдалося знайти категорії у файлі")
+
+
+class CategoryItem(QWidget):
+    """Віджет для відображення категорії у списку."""
+
+    def __init__(self, category: CategoryData, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(category.is_selected)
+        self.label = QLabel(f"{category.name} ({category.count})")
+
+        layout.addWidget(self.checkbox)
+        layout.addWidget(self.label)
+        layout.addStretch()
+
+
+class ParametersTab(QWidget):
+    """Вкладка для аналізу параметрів по категоріях."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.main_window = None  # Зберігаємо посилання на головне вікно
+        self.selected_params = set()
+        self.selected_values = {}  # {param_name: set(selected_values)}
+        self.init_ui()
+
+    def init_ui(self) -> None:
+        """Ініціалізація інтерфейсу."""
+        layout = QHBoxLayout(self)
+
+        # Ліва панель для пошуку і вибору категорії
+        left_panel = QVBoxLayout()
+
+        # Додаємо поле пошуку
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Пошук категорії...")
+        self.search_input.textChanged.connect(self.filter_categories)
+        left_panel.addWidget(self.search_input)
+
+        # Список категорій
+        self.category_list = QListWidget()
+        self.category_list.setMinimumWidth(180)
+        self.category_list.setMaximumWidth(220)
+        self.category_list.setMinimumHeight(200)
+        self.category_list.setMaximumHeight(300)
+        # Встановлюємо виділення на весь рядок
+        self.category_list.setSelectionBehavior(
+            QListWidget.SelectionBehavior.SelectRows
+        )
+        # Встановлюємо режим вибору одного елемента
+        self.category_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        # Встановлюємо стиль для підсвічування
+        self.category_list.setStyleSheet(
+            """
+            QListWidget {
+                background-color: #2d2d2d;
+                border: 1px solid #CCCCCC;
+            }
+            QListWidget::item {
+                padding: 2px;
+            }
+            QListWidget::item:selected {
+                background-color: #0078D7;
+                color: white;
+            }
+            QListWidget::item:hover {
+                background-color: transparent;
+                border: 1px solid #0078D7;
+            }
+        """
+        )
+        self.category_list.currentItemChanged.connect(self.on_category_selected)
+        left_panel.addWidget(self.category_list)
+
+        # Середня панель для параметрів
+        middle_panel = QVBoxLayout()
+        middle_panel.addWidget(QLabel("Параметри:"))
+
+        # Тут заміняємо стару версію params_list на нову
+        self.params_list = QListWidget()
+        self.params_list.setMinimumWidth(250)
+        # Встановлюємо виділення на весь рядок
+        self.params_list.setSelectionBehavior(QListWidget.SelectionBehavior.SelectRows)
+        # Встановлюємо режим вибору одного елемента
+        self.params_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        # Встановлюємо стиль для підсвічування
+        self.params_list.setStyleSheet(
+            """
+            QListWidget {
+                background-color: #2d2d2d;
+                border: 1px solid #CCCCCC;
+            }
+            QListWidget::item {
+                padding: 2px;
+            }
+            QListWidget::item:selected {
+                background-color: #0078D7;
+                color: white;
+            }
+            QListWidget::item:hover {
+                background-color: transparent;
+                border: 1px solid #0078D7;
+            }
+        """
+        )
+        self.params_list.currentItemChanged.connect(self.on_param_changed)
+        middle_panel.addWidget(self.params_list)
+
+        # Права панель для значень
+        right_panel = QVBoxLayout()
+        right_panel.addWidget(QLabel("Значення:"))
+        self.values_list = QListWidget()
+        self.values_list.setStyleSheet(
+            """
+            QListWidget {
+                background-color: #2d2d2d;
+                border: 1px solid #CCCCCC;
+            }
+            QListWidget::item {
+                padding: 2px;
+            }
+            QListWidget::item:selected {
+                background-color: transparent;
+                color: white;
+            }
+            QListWidget::item:hover {
+                background-color: transparent;
+                border: 1px solid #0078D7;
+            }
+        """
+        )
+        self.values_list.itemChanged.connect(self.on_value_selected)
+        right_panel.addWidget(self.values_list)
+
+        # Додаємо панелі до головного layout
+        left_container = QWidget()
+        left_container.setLayout(left_panel)
+
+        middle_container = QWidget()
+        middle_container.setLayout(middle_panel)
+        middle_container.setMinimumWidth(250)
+
+        right_container = QWidget()
+        right_container.setLayout(right_panel)
+        right_container.setMinimumWidth(250)
+
+        layout.addWidget(left_container)
+        layout.addWidget(middle_container)
+        layout.addWidget(right_container)
+
+    def set_main_window(self, window):
+        """Встановлює посилання на головне вікно."""
+        self.main_window = window
+
+    def update_categories(self, categories: Dict[str, CategoryData]) -> None:
+        """Оновлює список категорій."""
+        self.category_list.clear()
+        for name in sorted(categories.keys()):
+            item = QListWidgetItem()
+
+            # Створюємо віджет з радіокнопкою та текстом
+            widget = QWidget()
+            layout = QHBoxLayout(widget)
+            layout.setContentsMargins(4, 2, 4, 2)
+
+            radio = QRadioButton()
+            label = QLabel(name)
+
+            layout.addWidget(radio)
+            layout.addWidget(label)
+            layout.addStretch()
+
+            # Зберігаємо радіокнопку та текст у даних елемента
+            item.setData(Qt.ItemDataRole.UserRole, (radio, label))
+
+            self.category_list.addItem(item)
+            self.category_list.setItemWidget(item, widget)
+
+            # Підключаємо сигнал радіокнопки
+            radio.clicked.connect(
+                lambda checked, item=item: self.on_radio_clicked(item)
+            )
+
+            # Встановлюємо фіксований розмір елемента
+            item.setSizeHint(widget.sizeHint())
+
+    def on_radio_clicked(self, item: QListWidgetItem) -> None:
+        """Обробляє клік по радіокнопці."""
+        # Знімаємо виділення з усіх радіокнопок
+        for i in range(self.category_list.count()):
+            current_item = self.category_list.item(i)
+            radio, _ = current_item.data(Qt.ItemDataRole.UserRole)
+            radio.setChecked(False)
+
+        # Встановлюємо радіокнопку для вибраного елемента
+        self.category_list.setCurrentItem(item)
+        radio, _ = item.data(Qt.ItemDataRole.UserRole)
+        radio.setChecked(True)
+
+    def filter_categories(self, text: str) -> None:
+        """Фільтрує список категорій за текстом пошуку."""
+        for i in range(self.category_list.count()):
+            item = self.category_list.item(i)
+            _, label = item.data(Qt.ItemDataRole.UserRole)
+            item.setHidden(text.lower() not in label.text().lower())
+
+    def on_category_selected(
+        self, current: QListWidgetItem, previous: QListWidgetItem
+    ) -> None:
+        """Обробляє вибір категорії."""
+        if not current:
+            return
+
+        # Знімаємо виділення з усіх радіокнопок
+        for i in range(self.category_list.count()):
+            item = self.category_list.item(i)
+            radio, _ = item.data(Qt.ItemDataRole.UserRole)
+            radio.setChecked(False)
+
+        # Встановлюємо радіокнопку для вибраного елемента
+        radio, label = current.data(Qt.ItemDataRole.UserRole)
+        radio.setChecked(True)
+
+        category = label.text()
+        self.params_list.clear()
+        self.values_list.clear()
+        self.selected_params.clear()
+        self.selected_values.clear()
+
+        # Отримуємо всі параметри для вибраної категорії
+        params_values = self.get_category_params(category)
+
+        # Додаємо параметри до списку з радіокнопками
+        for param_name in sorted(params_values.keys()):
+            item = QListWidgetItem()
+
+            # Створюємо віджет з радіокнопкою та текстом
+            widget = QWidget()
+            layout = QHBoxLayout(widget)
+            layout.setContentsMargins(4, 2, 4, 2)
+
+            radio = QRadioButton()
+            label = QLabel(param_name)
+
+            layout.addWidget(radio)
+            layout.addWidget(label)
+            layout.addStretch()
+
+            # Зберігаємо радіокнопку та текст у даних елемента
+            item.setData(Qt.ItemDataRole.UserRole, (radio, label))
+
+            self.params_list.addItem(item)
+            self.params_list.setItemWidget(item, widget)
+
+            # Підключаємо сигнал радіокнопки
+            radio.clicked.connect(
+                lambda checked, item=item: self.on_param_radio_clicked(item)
+            )
+
+    def on_param_radio_clicked(self, item: QListWidgetItem) -> None:
+        """Обробляє клік по радіокнопці параметра."""
+        # Знімаємо виділення з усіх радіокнопок
+        for i in range(self.params_list.count()):
+            current_item = self.params_list.item(i)
+            radio, _ = current_item.data(Qt.ItemDataRole.UserRole)
+            radio.setChecked(False)
+
+        # Встановлюємо радіокнопку для вибраного елемента
+        self.params_list.setCurrentItem(item)
+        radio, label = item.data(Qt.ItemDataRole.UserRole)
+        radio.setChecked(True)
+
+    def get_category_params(self, category: str) -> Dict[str, Set[str]]:
+        """Отримує всі параметри та їх значення для вибраної категорії."""
+        params_values = defaultdict(set)
+
+        try:
+            if self.main_window and self.main_window.xml_file_path:
+                # Читаємо файл як текст
+                with open(
+                    self.main_window.xml_file_path,
+                    "r",
+                    encoding="utf-8",
+                    errors="ignore",
+                ) as file:
+                    content = file.read()
+
+                # Створюємо парсер з максимальною толерантністю
+                parser = etree.XMLParser(
+                    recover=True, encoding="utf-8", strip_cdata=False
+                )
+
+                # Парсимо XML
+                root = etree.fromstring(content.encode("utf-8"), parser)
+
+                # Знаходимо всі товари в категорії
+                for offer in root.findall(".//offer"):
+                    offer_category = offer.find("category")
+                    if offer_category is not None and offer_category.text == category:
+                        # Збираємо параметри
+                        for param in offer.findall(".//param"):
+                            name = param.get("name")
+                            if name and param.text:
+                                params_values[name].add(param.text.strip())
+
+        except Exception as e:
+            print(f"Помилка при отриманні параметрів: {str(e)}")
+            if self.main_window:
+                print(f"XML файл: {self.main_window.xml_file_path}")
+            print(f"Категорія: {category}")
+
+        return params_values
+
+    def on_param_changed(
+        self, current: QListWidgetItem, previous: QListWidgetItem
+    ) -> None:
+        """Обробляє вибір параметра."""
+        if not current:
+            return
+
+        # Знімаємо виділення з усіх радіокнопок
+        for i in range(self.params_list.count()):
+            item = self.params_list.item(i)
+            radio, _ = item.data(Qt.ItemDataRole.UserRole)
+            radio.setChecked(False)
+
+        # Встановлюємо радіокнопку для вибраного елемента
+        radio, label = current.data(Qt.ItemDataRole.UserRole)
+        radio.setChecked(True)
+
+        # Отримуємо назву параметра
+        param_name = label.text()
+
+        # Оновлюємо вибрані параметри
+        self.selected_params.clear()
+        self.selected_params.add(param_name)
+
+        # Оновлюємо список значень
+        self.update_values_list(param_name)
+
+    def update_values_list(self, param_name: str) -> None:
+        """Оновлює список значень для вибраного параметра."""
+        self.values_list.clear()
+
+        # Отримуємо поточний вибраний елемент
+        current_item = self.category_list.currentItem()
+        if not current_item:
+            return
+
+        # Отримуємо текст категорії з мітки
+        _, label = current_item.data(Qt.ItemDataRole.UserRole)
+        category = label.text()
+
+        # Отримуємо параметри та їх значення
+        params_values = self.get_category_params(category)
+
+        if param_name in params_values:
+            for value in sorted(params_values[param_name]):
+                item = QListWidgetItem()
+                # Створюємо віджет для значення
+                widget = QWidget()
+                layout = QHBoxLayout(widget)
+                layout.setContentsMargins(4, 2, 4, 2)
+
+                checkbox = QCheckBox()
+                label = QLabel(value)
+                # Робимо мітку клікабельною
+                label.mousePressEvent = (
+                    lambda _, item=item: self.on_value_label_clicked(item)
+                )
+
+                layout.addWidget(checkbox)
+                layout.addWidget(label)
+                layout.addStretch()
+
+                # Зберігаємо чекбокс та мітку в даних елемента
+                item.setData(Qt.ItemDataRole.UserRole, (checkbox, label, value))
+
+                self.values_list.addItem(item)
+                self.values_list.setItemWidget(item, widget)
+
+                # Підключаємо сигнал чекбокса
+                checkbox.stateChanged.connect(
+                    lambda state, item=item: self.on_value_checkbox_changed(item, state)
+                )
+
+    def on_value_checkbox_changed(self, item: QListWidgetItem, state: int) -> None:
+        """Обробляє зміну стану чекбокса значення."""
+        if not self.selected_params:
+            return
+
+        checkbox, _, value = item.data(Qt.ItemDataRole.UserRole)
+        selected_param = next(iter(self.selected_params))
+
+        if selected_param not in self.selected_values:
+            self.selected_values[selected_param] = set()
+
+        if state == 2:  # Qt.CheckState.Checked == 2
+            self.selected_values[selected_param].add(value)
+            widget = self.values_list.itemWidget(item)
+            widget.setStyleSheet("background-color: #0078D7; color: white;")
+        else:
+            self.selected_values[selected_param].discard(value)
+            widget = self.values_list.itemWidget(item)
+            widget.setStyleSheet("")
+
+    def on_value_label_clicked(self, item: QListWidgetItem) -> None:
+        """Обробляє клік по тексту значення."""
+        checkbox, _, _ = item.data(Qt.ItemDataRole.UserRole)
+        # Перемикаємо стан чекбокса
+        checkbox.setChecked(not checkbox.isChecked())
+
+    def on_value_selected(self, item: QListWidgetItem) -> None:
+        """Обробляє вибір значення параметра."""
+        if not self.selected_params:
+            return
+
+        value = item.text()
+        selected_param = next(
+            iter(self.selected_params)
+        )  # Беремо поточний вибраний параметр
+
+        if selected_param not in self.selected_values:
+            self.selected_values[selected_param] = set()
+
+        if item.checkState() == Qt.CheckState.Checked:
+            self.selected_values[selected_param].add(value)
+        else:
+            self.selected_values[selected_param].discard(value)
+
+    def get_filtered_offers(self) -> Tuple[List[etree.Element], str, Dict[str, Set[str]]]:
+        """Повертає відфільтровані товари та інформацію про фільтри."""
+        filtered_offers = []
+        current_item = self.category_list.currentItem()
+        if not current_item:
+            return [], "", {}
+
+        # Отримуємо текст категорії з мітки
+        _, label = current_item.data(Qt.ItemDataRole.UserRole)
+        category = label.text()
+
+        try:
+            if self.main_window and self.main_window.xml_file_path:
+                # Читаємо файл як текст
+                with open(self.main_window.xml_file_path, "r", encoding="utf-8", errors="ignore") as file:
+                    content = file.read()
+
+                # Створюємо парсер
+                parser = etree.XMLParser(recover=True, encoding="utf-8", strip_cdata=False)
+                root = etree.fromstring(content.encode("utf-8"), parser)
+
+                # Проходимо по всіх товарах
+                for offer in root.findall(".//offer"):
+                    offer_category = offer.find("category")
+                    
+                    # Перевіряємо чи співпадає категорія
+                    if offer_category is not None and offer_category.text == category:
+                        # Для кожного вибраного параметра перевіряємо його значення
+                        matches_all_params = True
+                        
+                        for param_name, selected_values in self.selected_values.items():
+                            if not selected_values:  # Якщо немає вибраних значень для параметра
+                                continue
+                                
+                            # Шукаємо параметр з вибраним значенням
+                            param_found = False
+                            for param in offer.findall(".//param"):
+                                if (param.get("name") == param_name and 
+                                    param.text and 
+                                    param.text.strip() in selected_values):
+                                    param_found = True
+                                    break
+                                    
+                            if not param_found:
+                                matches_all_params = False
+                                break
+                        
+                        # Якщо всі параметри співпали - додаємо товар
+                        if matches_all_params:
+                            filtered_offers.append(copy.deepcopy(offer))
+
+            return filtered_offers, category, self.selected_values
+
+        except Exception as e:
+            print(f"Помилка при фільтрації товарів: {str(e)}")
+            return [], "", {}
+
+
+class NotFoundDialog(QDialog):
+    """Діалогове вікно для відображення ненайдених ID."""
+
+    def __init__(self, not_found_ids: Set[str], parent=None):
+        super().__init__(parent)
+        self.init_ui(not_found_ids)
+
+    def init_ui(self, not_found_ids: Set[str]) -> None:
+        self.setWindowTitle("Ненайдені ID")
+        self.setMinimumWidth(400)
+
+        layout = QVBoxLayout(self)
+
+        self.text_edit = QTextEdit()
+        self.text_edit.setPlainText("\n".join(sorted(not_found_ids)))
+        self.text_edit.setReadOnly(True)
+        layout.addWidget(self.text_edit)
+
+        button_layout = QHBoxLayout()
+
+        copy_button = QPushButton("Копіювати")
+        copy_button.clicked.connect(self.copy_to_clipboard)
+        button_layout.addWidget(copy_button)
+
+        close_button = QPushButton("Закрити")
+        close_button.clicked.connect(self.accept)
+        button_layout.addWidget(close_button)
+
+        layout.addLayout(button_layout)
+
+    def copy_to_clipboard(self) -> None:
+        """Копіює список ненайдених ID в буфер обміну."""
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.text_edit.toPlainText())
+        QMessageBox.information(self, "Успіх", "Список ID скопійовано в буфер обміну")
+
+
+class XMLProcessor(QMainWindow):
+    """Оптимізований головний клас програми для обробки XML."""
+
+    def __init__(self):
+        super().__init__()
+        self.init_ui()
+        self.setup_drag_drop()
+        self.last_directory = str(Path.home())
+        self.tree = None
+        self.xml_file_path = None
+        self.all_categories: Dict[str, CategoryData] = {}
+        self.selected_categories: Set[str] = set()
+        self.worker = None
+
+    def init_ui(self) -> None:
+        """Ініціалізація інтерфейсу."""
+        self.setWindowTitle("XML Feed Processor")
+        self.setMinimumSize(*CONFIG["WINDOW_SIZE"])
+
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        layout = QVBoxLayout(main_widget)
+
+        self.create_top_panel(layout)
+        self.create_tabs(layout)
+        self.create_bottom_panel(layout)
+
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("Готово до роботи")
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.status_bar.addPermanentWidget(self.progress_bar)
+
+    def setup_drag_drop(self) -> None:
+        """Налаштування drag-and-drop."""
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        """Обробка початку drag-and-drop."""
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if len(urls) == 1 and urls[0].toLocalFile().endswith(".xml"):
+                event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        """Обробка закінчення drag-and-drop."""
+        file_path = event.mimeData().urls()[0].toLocalFile()
+        self.load_xml_file(file_path)
+
+    def create_top_panel(self, layout: QVBoxLayout) -> None:
+        """Створення верхньої панелі."""
+        file_container = QHBoxLayout()
+
+        self.select_file_btn = QPushButton("Вибрати\nXML файл")
+        self.select_file_btn.setFixedSize(100, 60)
+        self.select_file_btn.clicked.connect(self.select_file)
+        file_container.addWidget(self.select_file_btn)
+
+        self.file_label = QLabel("Перетягніть XML файл сюди або натисніть кнопку")
+        file_container.addWidget(self.file_label)
+
+        file_container.addStretch()
+
+        self.reset_btn = QPushButton("Скинути\nвсі параметри")
+        self.reset_btn.setFixedSize(100, 60)
+        self.reset_btn.clicked.connect(self.reset_all)
+        self.reset_btn.setEnabled(False)
+        file_container.addWidget(self.reset_btn)
+
+        layout.addLayout(file_container)
+
+    def create_tabs(self, layout: QVBoxLayout) -> None:
+        """Створення вкладок."""
+        self.tab_widget = QTabWidget()
+        layout.addWidget(self.tab_widget)
+
+        self.create_category_tab()
+        self.create_id_tab()
+        self.create_params_tab()  # Додаємо нову вкладку
+
+    def create_category_tab(self) -> None:
+        """Створення вкладки категорій."""
+        category_tab = QWidget()
+        category_layout = QVBoxLayout(category_tab)
+
+        # Додаємо чекбокс "Вибрати всі"
+        self.select_all_checkbox = QCheckBox("Вибрати всі категорії")
+        self.select_all_checkbox.stateChanged.connect(self.on_select_all_categories)
+        category_layout.addWidget(self.select_all_checkbox)
+
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Пошук категорій...")
+        self.search_input.textChanged.connect(self.filter_categories)
+        category_layout.addWidget(self.search_input)
+
+        self.category_list = QListWidget()
+        self.category_list.setMinimumHeight(150)
+        category_layout.addWidget(self.category_list)
+
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        category_layout.addWidget(line)
+
+        self.selected_label = QLabel("Вибрані категорії:")
+        category_layout.addWidget(self.selected_label)
+
+        self.selected_categories_list = QListWidget()
+        self.selected_categories_list.setMinimumHeight(100)
+        category_layout.addWidget(self.selected_categories_list)
+
+        self.tab_widget.addTab(category_tab, "Категорії")
+
+    def create_id_tab(self) -> None:
+        """Створення вкладки ID."""
+        id_tab = QWidget()
+        id_layout = QVBoxLayout(id_tab)
+
+        id_label = QLabel("Введіть ID товарів (по одному в рядок):")
+        id_layout.addWidget(id_label)
+
+        self.id_input = QTextEdit()
+        self.id_input.setPlaceholderText("Наприклад:\n123456\n789012")
+        id_layout.addWidget(self.id_input)
+
+        self.tab_widget.addTab(id_tab, "Пошук за ID")
+
+    def create_params_tab(self) -> None:
+        """Створення вкладки параметрів."""
+        self.params_tab = ParametersTab()
+        self.params_tab.set_main_window(self)  # Встановлюємо посилання на головне вікно
+        self.tab_widget.addTab(self.params_tab, "Параметри")
+
+    def create_bottom_panel(self, layout: QVBoxLayout) -> None:
+        """Створення нижньої панелі."""
+        self.separate_files_checkbox = QCheckBox("Вивантажити окремими файлами")
+        self.separate_files_checkbox.setEnabled(False)
+        layout.addWidget(self.separate_files_checkbox)
+
+        button_layout = QHBoxLayout()
+
+        self.export_xml_btn = QPushButton("Експортувати в XML")
+        self.export_xml_btn.clicked.connect(self.on_export_xml_clicked)
+        self.export_xml_btn.setEnabled(False)
+        button_layout.addWidget(self.export_xml_btn)
+
+        self.export_csv_btn = QPushButton("Експортувати в CSV")
+        self.export_csv_btn.clicked.connect(self.on_export_csv_clicked)
+        self.export_csv_btn.setEnabled(False)
+        button_layout.addWidget(self.export_csv_btn)
+
+        layout.addLayout(button_layout)
+
+    def load_xml_file(self, file_path: str) -> None:
+        """Оптимізоване завантаження XML файлу."""
+        try:
+            self.status_bar.showMessage("Завантаження файлу...")
+            self.progress_bar.setVisible(True)
+            
+            self.xml_file_path = file_path
+            
+            if os.path.exists(CONFIG['XML_SCHEMA_PATH']):
+                schema_doc = etree.parse(CONFIG['XML_SCHEMA_PATH'])
+                schema = etree.XMLSchema(schema_doc)
+                parser = etree.XMLParser(schema=schema)
+            else:
+                parser = etree.XMLParser()
+            
+            self.worker = XMLProcessingWorker(file_path)
+            self.worker.progress.connect(self.update_progress)
+            self.worker.finished.connect(self.on_xml_processed)
+            # Замість підключення сигналу error, додаємо обробник через try-except
+            self.worker.error.connect(lambda msg: self.show_error("Помилка при обробці XML", msg))
+            self.worker.start()
+            
+            self.file_label.setText(f"Вибрано файл: {Path(file_path).name}")
+            self.last_directory = str(Path(file_path).parent)
+            
+        except Exception as e:
+            self.show_error("Помилка при завантаженні файлу", str(e))
+
+    def update_progress(self, value: int) -> None:
+        """Оновлення прогрес-бару."""
+        self.progress_bar.setValue(value)
+
+    def on_export_xml_clicked(self) -> None:
+        """Обробник натискання кнопки експорту XML."""
+        self.status_bar.showMessage("Підготовка експорту в XML...")
+        QApplication.processEvents()  # Оновлюємо інтерфейс
+        self.export_data("xml")
+
+    def on_export_csv_clicked(self) -> None:
+        """Обробник натискання кнопки експорту CSV."""
+        self.status_bar.showMessage("Підготовка експорту в CSV...")
+        QApplication.processEvents()  # Оновлюємо інтерфейс
+        self.export_data("csv")
+
+    def on_xml_processed(self, categories: Dict[str, int]) -> None:
+        """Обробка успішного завантаження XML."""
+        try:
+            # Зберігаємо оригінальні назви категорій
+            self.all_categories = {
+                name: CategoryData(name=name, count=count)
+                for name, count in categories.items()
+            }
+            
+            # Підраховуємо загальну кількість товарів
+            total_products = sum(count for count in categories.values())
+            self.update_category_list()
+            self.params_tab.update_categories(self.all_categories)
+            self.enable_export_buttons()
+            self.progress_bar.setVisible(False)
+            self.status_bar.showMessage(f"Файл успішно завантажено. Загальна кількість товарів: {total_products}")
+            
+            # Додатково виводимо інформацію в консоль
+            print(f"Знайдено {len(self.all_categories)} унікальних категорій")
+            print(f"Загальна кількість товарів у файлі: {total_products}")
+        except Exception as e:
+            self.show_error("Помилка при обробці категорій", str(e))
+
+    def on_select_all_categories(self, state: int) -> None:
+        """Обробляє стан чекбоксу 'Вибрати всі'."""
+        try:
+            is_checked = state == Qt.CheckState.Checked.value
+            
+            # Якщо користувач зняв виділення з "Вибрати всі", не чіпаємо окремі категорії
+            if not is_checked:
+                return
+                
+            # Якщо користувач вибрав "Вибрати всі", тоді вибираємо всі категорії
+            if is_checked:
+                # Очищаємо список вибраних категорій
+                self.selected_categories.clear()
+                
+                # Оновлюємо стан всіх категорій
+                for i in range(self.category_list.count()):
+                    item = self.category_list.item(i)
+                    widget = self.category_list.itemWidget(item)
+                    if widget and not item.isHidden():
+                        category_name = widget.label.text().split(" (")[0].strip().replace("'", "")
+                        widget.checkbox.setChecked(is_checked)
+                        if is_checked:
+                            self.selected_categories.add(category_name)
+            
+            # Оновлюємо список вибраних категорій напряму
+            try:
+                self.selected_categories_list.clear()
+                for cat in sorted(self.selected_categories):
+                    if cat in self.all_categories:
+                        count = self.all_categories[cat].count
+                        self.selected_categories_list.addItem(f"{cat} ({count})")
+                    else:
+                        self.selected_categories_list.addItem(f"{cat}")
+            except Exception as e:
+                print(f"Помилка при оновленні списку вибраних категорій: {str(e)}")
+                
+            print(f"Вибрано категорій: {len(self.selected_categories)}")
+            self.status_bar.showMessage(f"Вибрано категорій: {len(self.selected_categories)}")
+            
+        except Exception as e:
+            print(f"Помилка при виборі всіх категорій: {e}")
+            self.show_error("Помилка", str(e))
+
+    def get_offers_by_category(self) -> Generator[etree.Element, None, None]:
+        """Оптимізована версія отримання товарів за категоріями через генератор."""
+        print(f"Початок get_offers_by_category")
+        print(f"Кількість вибраних категорій: {len(self.selected_categories)}")
+        print(f"Вибрані категорії: {sorted(self.selected_categories)}")
+        
+        if not self.xml_file_path:
+            print("Помилка: XML файл не вибрано")
+            QMessageBox.warning(self, "Попередження", "Спочатку виберіть XML файл")
+            return
+
+        if not self.selected_categories:
+            print("Помилка: Не вибрано жодної категорії")
+            QMessageBox.warning(self, "Попередження", "Виберіть хоча б одну категорію")
+            return
+
+        try:
+            with open(self.xml_file_path, 'r', encoding='utf-8', errors='ignore') as file:
+                content = file.read()
+            
+            parser = etree.XMLParser(recover=True, encoding='utf-8', strip_cdata=False)
+            root = etree.fromstring(content.encode('utf-8'), parser)
+            
+            offers = root.findall('.//offer')
+            total_offers = len(offers)
+            print(f"Всього знайдено товарів: {total_offers}")
+            
+            progress = QProgressDialog("Пошук товарів...", "Скасувати", 0, total_offers, self)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            
+            offers_found = 0
+            
+            # Збираємо всі унікальні категорії з XML
+            all_xml_categories = set()
+            for category_elem in root.findall('.//category'):
+                if category_elem.text:
+                    all_xml_categories.add(category_elem.text.strip())
+            
+            print(f"Всі категорії з XML: {sorted(all_xml_categories)}")
+            
+            # Знаходимо відповідності між вибраними категоріями та категоріями з XML
+            matching_categories = set()
+            for xml_category in all_xml_categories:
+                for selected_category in self.selected_categories:
+                    # Точний збіг або початок з вибраною категорією
+                    if xml_category == selected_category or xml_category.startswith(selected_category + " ("):
+                        matching_categories.add(xml_category)
+                        break
+            
+            print(f"Відповідні категорії з XML: {sorted(matching_categories)}")
+            
+            for i, offer in enumerate(offers):
+                if progress.wasCanceled():
+                    break
+                
+                try:
+                    category = offer.find('category')
+                    if category is not None and category.text and category.text.strip() in matching_categories:
+                        offers_found += 1
+                        yield offer
+                except Exception as e:
+                    print(f"Помилка при обробці товару {i}: {str(e)}")
+                    continue
+                
+                if i % 100 == 0:
+                    progress.setValue(i)
+                    QApplication.processEvents()
+            
+            progress.setValue(total_offers)
+            print(f"Знайдено товарів для вибраних категорій: {offers_found}")
+            
+        except Exception as e:
+            print(f"Помилка при отриманні товарів: {str(e)}")
+            self.show_error("Помилка при отриманні товарів", str(e))
+            return
+    def update_selected_categories_list(self) -> None:
+                """Оновлює список вибраних категорій."""
+                try:
+                    self.selected_categories_list.clear()
+                    
+                    # Знаходимо повні назви категорій з файлу (з дужками)
+                    for category in sorted(self.selected_categories):
+                        found = False
+                        
+                        # Спочатку шукаємо точний збіг
+                        if category in self.all_categories:
+                            count = self.all_categories[category].count
+                            self.selected_categories_list.addItem(f"{category} ({count})")
+                            found = True
+                        else:
+                            # Якщо точного збігу немає, шукаємо категорію, яка починається з вибраної
+                            for full_category in self.all_categories.keys():
+                                if full_category.startswith(category) and (
+                                    len(full_category) == len(category) or 
+                                    full_category[len(category)].isspace() or 
+                                    full_category[len(category)] == '('
+                                ):
+                                    count = self.all_categories[full_category].count
+                                    self.selected_categories_list.addItem(f"{full_category} ({count})")
+                                    found = True
+                                    break
+                        
+                        # Якщо категорія взагалі не знайдена
+                        if not found:
+                            self.selected_categories_list.addItem(f"{category}")
+                except Exception as e:
+                    print(f"Помилка при оновленні списку вибраних категорій: {str(e)}")
+
+    def get_offers_by_id(self) -> Tuple[Dict[str, List[etree.Element]], Set[str]]:
+        """Оптимізована версія пошуку товарів за ID з підтримкою різних полів ID."""
+        if not self.xml_file_path:
+            return {}, set()
+
+        # Створюємо set з ID для швидкого пошуку
+        search_ids = {
+            id.strip()
+            for id in self.id_input.toPlainText().strip().split("\n")
+            if id.strip()
+        }
+
+        if not search_ids:
+            QMessageBox.warning(self, "Попередження", "Введіть хоча б один ID")
+            return {}, set()
+
+        found_offers = defaultdict(list)
+        found_ids = set()
+        not_found_ids = set(search_ids)
+
+        # Список можливих полів для ID
+        id_fields = ["id", "Code", "code", "vendorCode", "artikul", "article"]
+
+        try:
+            # Створюємо прогрес-діалог
+            progress = QProgressDialog("Пошук товарів...", "Скасувати", 0, 100, self)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setValue(0)
+
+            # Використовуємо iterparse безпосередньо
+            parser = etree.XMLParser(
+                recover=True, remove_blank_text=True, strip_cdata=False
+            )
+            tree = etree.parse(self.xml_file_path, parser)
+            context = ((None, elem) for elem in tree.findall(".//offer"))
+
+            # Лічильник для відстеження прогресу
+            file_size = os.path.getsize(self.xml_file_path)
+            processed = 0
+
+            for _, offer in context:
+                # Перевіряємо різні варіанти ID
+                possible_ids = set()
+
+                # Перевіряємо ID як атрибут
+                for id_field in id_fields:
+                    offer_id = offer.get(id_field)
+                    if offer_id:
+                        possible_ids.add(offer_id)
+
+                # Перевіряємо ID в елементах
+                for id_field in id_fields:
+                    id_elem = offer.find(id_field)
+                    if id_elem is not None and id_elem.text:
+                        possible_ids.add(id_elem.text.strip())
+
+                # Перевіряємо збіги
+                for pid in possible_ids:
+                    if pid in search_ids:
+                        category = offer.find("category")
+                        category_name = (
+                            category.text if category is not None else "No Category"
+                        )
+
+                        parser = etree.XMLParser(recover=True, strip_cdata=False)
+                        offer_copy = etree.fromstring(
+                            etree.tostring(offer, encoding="unicode", method="xml"),
+                            parser,
+                        )
+                        found_offers[category_name].append(offer_copy)
+                        found_ids.add(pid)
+                        not_found_ids.discard(pid)
+                        break
+
+                processed += 1
+                if processed % 1000 == 0:
+                    current_pos = context.file.tell() if hasattr(context, "file") else 0
+                    progress_value = (
+                        int((current_pos / file_size) * 100) if file_size > 0 else 0
+                    )
+                    progress.setValue(min(progress_value, 100))
+
+                    if progress.wasCanceled():
+                        break
+
+                    QApplication.processEvents()
+
+                # Очищаємо пам'ять
+                offer.clear()
+                while offer.getprevious() is not None:
+                    del offer.getparent()[0]
+
+                # Якщо знайшли всі ID, завершуємо пошук
+                if not not_found_ids:
+                    break
+
+            progress.setValue(100)
+
+            # Показуємо ненайдені ID
+            if not_found_ids:
+                dialog = NotFoundDialog(not_found_ids, self)
+                dialog.exec()
+
+            return found_offers, found_ids
+
+        except Exception as e:
+            self.show_error(
+                "Помилка при пошуку товарів",
+                f"Деталі помилки: {str(e)}\nШлях до файлу: {self.xml_file_path}",
+            )
+            return {}, set()
+
+    def export_data(self, format_type: str) -> None:
+        """Оновлений метод експорту даних."""
+        print(f"Початок експорту даних у форматі {format_type}")
+        self.status_bar.showMessage(f"Експорт даних у форматі {format_type.upper()}...")
+
+        try:
+            current_tab = self.tab_widget.currentWidget()
+            current_tab_index = self.tab_widget.currentIndex()
+            print(f"Поточна вкладка: {current_tab_index}")
+
+            if isinstance(current_tab, QWidget):
+                if current_tab_index == 0:  # Вкладка категорій
+                    print("Експорт з вкладки категорій")
+                    print(f"Вибрані категорії: {sorted(self.selected_categories)}")
+
+                    # Отримуємо всі вибрані товари
+                    offers = list(self.get_offers_by_category())
+                    print(f"Отримано товарів для експорту: {len(offers)}")
+
+                    if not offers:
+                        print("Помилка: Немає товарів для експорту")
+                        QMessageBox.warning(
+                            self,
+                            "Попередження",
+                            "Немає товарів для експорту. Виберіть хоча б одну категорію.",
+                        )
+                        return
+
+                    if self.separate_files_checkbox.isChecked():
+                        print("Експорт окремими файлами")
+                        self.export_separate_files(offers, format_type)
+                    else:
+                        print("Експорт одним файлом")
+                        self.export_single_file(offers, format_type)
+
+                elif current_tab_index == 1:  # Вкладка ID
+                    print("Експорт з вкладки ID")
+                    found_offers, found_ids = self.get_offers_by_id()
+                    if found_offers:
+                        # Конвертуємо знайдені товари в список
+                        all_offers = []
+                        for category_offers in found_offers.values():
+                            all_offers.extend(category_offers)
+
+                        if self.separate_files_checkbox.isChecked():
+                            self.export_separate_files(all_offers, format_type)
+                        else:
+                            self.export_single_file(all_offers, format_type)
+                    else:
+                        QMessageBox.warning(
+                            self,
+                            "Попередження",
+                            "Немає товарів для експорту. Перевірте введені ID.",
+                        )
+
+                elif current_tab_index == 2:  # Вкладка параметрів
+                    offers, category, selected_values = (
+                        self.params_tab.get_filtered_offers()
+                    )
+                    if offers:
+                        # Формуємо ім'я файлу
+                        filename_parts = [category]
+                        for param, values in selected_values.items():
+                            filename_parts.append(param)
+                            # Додаємо перші два значення
+                            sorted_values = sorted(values)
+                            if len(sorted_values) <= 2:
+                                filename_parts.extend(sorted_values)
+                            else:
+                                filename_parts.extend(sorted_values[:2])
+                                filename_parts.append(f"та_ще_{len(sorted_values)-2}")
+
+                        # Обмежуємо довжину імені файлу
+                        filename = "_".join(filename_parts)
+                        if len(filename) > 100:
+                            filename = filename[:97] + "..."
+
+                        # Замінюємо недопустимі символи
+                        filename = re.sub(r'[<>:"/\\|?*]', "_", filename)
+
+                        if format_type == "xml":
+                            self.save_as_xml(offers, filename)
+                        else:
+                            self.save_as_csv(offers, filename)
+                    else:
+                        QMessageBox.warning(
+                            self,
+                            "Попередження",
+                            "Немає товарів, що відповідають вибраним параметрам",
+                        )
+
+            self.status_bar.showMessage("Експорт завершено успішно")
+
+        except Exception as e:
+            self.show_error("Помилка при експорті", str(e))
+            self.status_bar.showMessage("Помилка при експорті")
+
+    def export_single_file(self, offers: List[etree.Element], format_type: str) -> None:
+        """Експортує всі товари в один файл."""
+        if format_type == "xml":
+            self.save_as_xml(offers)
+        else:
+            self.save_as_csv(offers)
+
+    def export_separate_files(
+        self, offers: List[etree.Element], format_type: str, by_category: bool = True
+    ) -> None:
+        """Експортує товари в окремі файли."""
+        if not offers:
+            return
+
+        # Спочатку запитуємо директорію для збереження всіх файлів
+        export_dir = QFileDialog.getExistingDirectory(
+            self,
+            "Виберіть папку для збереження файлів",
+            self.last_directory,
+            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontResolveSymlinks,
+        )
+
+        if not export_dir:  # Якщо користувач скасував вибір
+            return
+
+        self.last_directory = export_dir
+
+        if by_category:
+            categories = defaultdict(list)
+            for offer in offers:
+                category = offer.find("category")
+                if category is not None and category.text:
+                    categories[category.text].append(offer)
+
+            total_files = len(categories)
+            progress = QProgressDialog(
+                "Експорт файлів...", "Скасувати", 0, total_files, self
+            )
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+
+            for i, (category, category_offers) in enumerate(categories.items()):
+                if progress.wasCanceled():
+                    break
+
+                progress.setValue(i)
+
+                if category_offers:
+                    # Формуємо безпечне ім'я файлу
+                    safe_category_name = re.sub(r'[<>:"/\\|?*]', "_", category)
+                    file_path = os.path.join(
+                        export_dir, f"{safe_category_name}.{format_type}"
+                    )
+
+                    # Перевіряємо, чи існує файл з таким іменем
+                    counter = 1
+                    while os.path.exists(file_path):
+                        file_path = os.path.join(
+                            export_dir, f"{safe_category_name}_{counter}.{format_type}"
+                        )
+                        counter += 1
+
+                    try:
+                        if format_type == "xml":
+                            # Створюємо кореневі елементи
+                            root = etree.Element("yml_catalog")
+                            shop = etree.SubElement(root, "shop")
+                            offers_elem = etree.SubElement(shop, "offers")
+
+                            # Додаємо всі товари категорії
+                            for offer in category_offers:
+                                offers_elem.append(copy.deepcopy(offer))
+
+                            # Зберігаємо XML
+                            tree = etree.ElementTree(root)
+                            tree.write(
+                                file_path,
+                                encoding=CONFIG["DEFAULT_ENCODING"],
+                                xml_declaration=True,
+                                pretty_print=True,
+                            )
+                        else:  # CSV
+                            self.save_as_csv(category_offers, None, file_path)
+
+                    except Exception as e:
+                        print(f"Помилка при збереженні файлу {file_path}: {str(e)}")
+                        continue
+
+            progress.setValue(total_files)
+            QMessageBox.information(
+                self, "Успіх", f"Файли успішно збережено в папку:\n{export_dir}"
+            )
+
+    def save_as_xml(
+        self, offers: List[etree.Element], identifier: Optional[str] = None
+    ) -> None:
+        """Оптимізоване збереження товарів в XML файл."""
+        if not offers:
+            return
+
+        try:
+            # Формуємо ім'я файлу...
+            if identifier:
+                default_name = f"{identifier}.xml"
+            else:
+                current_tab = self.tab_widget.currentIndex()
+                if current_tab == 0:
+                    if len(self.selected_categories) == 1:
+                        default_name = f"{next(iter(self.selected_categories))}.xml"
+                    else:
+                        sorted_cats = sorted(self.selected_categories)
+                        if len(sorted_cats) > 2:
+                            default_name = f"{sorted_cats[0]}_{sorted_cats[1]}_and_{len(sorted_cats)-2}_more.xml"
+                        else:
+                            default_name = "_".join(sorted_cats) + ".xml"
+                else:
+                    default_name = "export_by_id.xml"
+
+            file_name, _ = QFileDialog.getSaveFileName(
+                self,
+                "Зберегти XML файл",
+                os.path.join(self.last_directory, default_name),
+                "XML files (*.xml)",
+            )
+
+            if file_name:
+                self.last_directory = os.path.dirname(file_name)
+
+                root = etree.Element("yml_catalog")
+                shop = etree.SubElement(root, "shop")
+                offers_elem = etree.SubElement(shop, "offers")
+
+                # Додаємо товари з прогрес-баром
+                total_offers = len(offers)
+                progress = QProgressDialog(
+                    "Збереження XML...", "Скасувати", 0, total_offers, self
+                )
+                progress.setWindowModality(Qt.WindowModality.WindowModal)
+
+                for i, offer in enumerate(offers):
+                    if progress.wasCanceled():
+                        break
+
+                    try:
+                        # Зберігаємо оригінальну структуру і CDATA
+                        offers_elem.append(copy.deepcopy(offer))
+                    except:
+                        continue
+
+                    if i % 100 == 0:
+                        progress.setValue(i)
+                        QApplication.processEvents()
+
+                progress.setValue(total_offers)
+
+                # Зберігаємо файл зі збереженням CDATA
+                tree = etree.ElementTree(root)
+                tree.write(
+                    file_name,
+                    encoding=CONFIG["DEFAULT_ENCODING"],
+                    xml_declaration=True,
+                    pretty_print=True,
+                    method="xml",
+                )
+
+                if not self.separate_files_checkbox.isChecked():
+                    QMessageBox.information(
+                        self,
+                        "Успіх",
+                        f"XML файл успішно збережено як {os.path.basename(file_name)}",
+                    )
+
+        except Exception as e:
+            self.show_error("Помилка при збереженні XML", str(e))
+
+    def save_as_csv(
+        self,
+        offers: List[etree.Element],
+        identifier: Optional[str] = None,
+        specified_path: Optional[str] = None,
+    ) -> None:
+        """Оптимізована версія збереження товарів у CSV файл."""
+        try:
+            if not offers:
+                QMessageBox.warning(self, "Попередження", "Немає даних для експорту")
+                return
+
+            # Визначаємо шлях для збереження
+            if specified_path:
+                file_name = specified_path
+            else:
+                # Формуємо ім'я файлу...
+                if identifier:
+                    default_name = f"{identifier}.csv"
+                else:
+                    current_tab = self.tab_widget.currentIndex()
+                    if current_tab == 0:
+                        if len(self.selected_categories) == 1:
+                            default_name = f"{next(iter(self.selected_categories))}.csv"
+                        else:
+                            sorted_cats = sorted(self.selected_categories)
+                            if len(sorted_cats) > 2:
+                                default_name = f"{sorted_cats[0]}_{sorted_cats[1]}_and_{len(sorted_cats)-2}_more.csv"
+                            else:
+                                default_name = "_".join(sorted_cats) + ".csv"
+                    else:
+                        default_name = "export_by_id.csv"
+
+                file_name, _ = QFileDialog.getSaveFileName(
+                    self,
+                    "Зберегти CSV файл",
+                    os.path.join(self.last_directory, default_name),
+                    "CSV files (*.csv)",
+                )
+
+            if not file_name:
+                return
+
+            if not specified_path:
+                self.last_directory = os.path.dirname(file_name)
+
+            # Пріоритетні поля
+            priority_fields = ["id", "code", "barcode", "vendor_code", "model", "title"]
+
+            # Збираємо всі можливі заголовки
+            all_headers = set()
+
+            # Створюємо прогрес-бар для аналізу структури
+            progress_analyze = QProgressDialog(
+                "Аналіз структури...", "Скасувати", 0, len(offers), self
+            )
+            progress_analyze.setWindowModality(Qt.WindowModality.WindowModal)
+
+            for i, offer in enumerate(offers):
+                if progress_analyze.wasCanceled():
+                    return
+
+                # Додаємо атрибути та теги
+                all_headers.update(offer.attrib.keys())
+                for elem in offer.iter():
+                    if isinstance(elem.tag, str):
+                        if elem.tag == "param" and "name" in elem.attrib:
+                            all_headers.add(elem.attrib["name"])
+                        elif elem.tag not in (
+                            "offers",
+                            "shop",
+                            "yml_catalog",
+                            "offer",
+                            "param",
+                        ):
+                            all_headers.add(elem.tag)
+
+                if i % 100 == 0:
+                    progress_analyze.setValue(i)
+                    QApplication.processEvents()
+
+            progress_analyze.setValue(len(offers))
+
+            # Формуємо фінальний список заголовків
+            headers = []
+
+            # Спочатку додаємо пріоритетні поля
+            for field in priority_fields:
+                if field in all_headers:
+                    headers.append(field)
+                    all_headers.remove(field)
+
+            # Додаємо решту полів
+            headers.extend(sorted(all_headers))
+
+            # Записуємо дані з прогрес-баром
+            progress_write = QProgressDialog(
+                "Запис даних...", "Скасувати", 0, len(offers), self
+            )
+            progress_write.setWindowModality(Qt.WindowModality.WindowModal)
+
+            with open(
+                file_name, "w", newline="", encoding=CONFIG["CSV_ENCODING"]
+            ) as csvfile:
+                writer = csv.DictWriter(
+                    csvfile, fieldnames=headers, delimiter=";", extrasaction="ignore"
+                )
+                writer.writeheader()
+
+                for i, offer in enumerate(offers):
+                    if progress_write.wasCanceled():
+                        break
+
+                    row = {}
+
+                    # Записуємо атрибути
+                    for attr, value in offer.attrib.items():
+                        if attr in headers:
+                            row[attr] = value
+
+                    # Обробляємо всі елементи
+                    for elem in offer.iter():
+                        if isinstance(elem.tag, str):
+                            if elem.tag == "param" and "name" in elem.attrib:
+                                param_name = elem.attrib["name"]
+                                if param_name in headers and elem.text:
+                                    row[param_name] = elem.text
+                            elif elem.tag in headers:
+                                if elem.text:
+                                    if (
+                                        elem.tag == "description"
+                                        and "<![CDATA["
+                                        in etree.tostring(elem, encoding="unicode")
+                                    ):
+                                        row[elem.tag] = f"<![CDATA[{elem.text}]]>"
+                                    else:
+                                        row[elem.tag] = elem.text
+
+                    writer.writerow(row)
+
+                    if i % 100 == 0:
+                        progress_write.setValue(i)
+                        QApplication.processEvents()
+
+                progress_write.setValue(len(offers))
+
+            if not specified_path:
+                QMessageBox.information(
+                    self,
+                    "Успіх",
+                    f"CSV файл успішно збережено як {os.path.basename(file_name)}",
+                )
+
+        except Exception as e:
+            self.show_error("Помилка при збереженні CSV", str(e))
+
+    def show_error(self, title: str, message: str) -> None:
+        """Відображення повідомлення про помилку."""
+        QMessageBox.critical(self, title, message)
+
+    def enable_export_buttons(self) -> None:
+        """Активація кнопок експорту."""
+        self.export_xml_btn.setEnabled(True)
+        self.export_csv_btn.setEnabled(True)
+        self.reset_btn.setEnabled(True)
+        self.separate_files_checkbox.setEnabled(True)
+
+    def select_file(self) -> None:
+        """Відкриває діалог вибору файлу."""
+        file_name, _ = QFileDialog.getOpenFileName(
+            self, "Виберіть XML файл", self.last_directory, "XML files (*.xml)"
+        )
+
+        if file_name:
+            self.load_xml_file(file_name)
+
+    def reset_all(self) -> None:
+        """Скидає всі налаштування програми."""
+        self.tree = None
+        self.xml_file_path = None
+        self.file_label.setText("Перетягніть XML файл сюди або натисніть кнопку")
+
+        self.all_categories.clear()
+        self.selected_categories.clear()
+
+        self.category_list.clear()
+        self.selected_categories_list.clear()
+        self.search_input.clear()
+        self.id_input.clear()
+        self.select_all_checkbox.setChecked(False)
+
+        # Скидаємо вкладку параметрів
+        self.params_tab.search_input.clear()  # Очищуємо поле пошуку
+        self.params_tab.category_list.clear()  # Очищуємо список категорій
+        self.params_tab.params_list.clear()  # Очищуємо список параметрів
+        self.params_tab.values_list.clear()  # Очищуємо список значень
+        self.params_tab.selected_params.clear()  # Очищуємо вибрані параметри
+        self.params_tab.selected_values.clear()  # Очищуємо вибрані значення
+
+        self.export_xml_btn.setEnabled(False)
+        self.export_csv_btn.setEnabled(False)
+        self.reset_btn.setEnabled(False)
+        self.separate_files_checkbox.setEnabled(False)
+        self.separate_files_checkbox.setChecked(False)
+
+        self.status_bar.showMessage("Налаштування скинуто")
+        QMessageBox.information(self, "Успіх", "Всі налаштування скинуто")
+
+    def update_category_list(self, filter_text: str = "") -> None:
+        """Оновлює список категорій."""
+        # Зберігаємо поточні вибрані категорії
+        current_selected = self.selected_categories.copy()
+        
+        self.category_list.clear()
+        
+        # Сортуємо категорії за кількістю товарів
+        sorted_categories = sorted(
+            self.all_categories.items(),
+            key=lambda x: (-x[1].count, x[0])  # Сортування за спаданням кількості, потім за назвою
+        )
+        
+        for name, category_data in sorted_categories:
+            if filter_text.lower() in name.lower():
+                item = QListWidgetItem()
+                self.category_list.addItem(item)
+                
+                # Створюємо копію даних категорії
+                category_data_copy = CategoryData(
+                    name=name,
+                    count=category_data.count,
+                    is_selected=name in current_selected  # Відновлюємо стан вибору
+                )
+                
+                category_widget = CategoryItem(category_data_copy)
+                item.setSizeHint(category_widget.sizeHint())
+                self.category_list.setItemWidget(item, category_widget)
+                
+                category_widget.checkbox.stateChanged.connect(
+                    lambda state, n=name: self.on_category_selected(state, n))
+                
+                # Встановлюємо початковий стан чекбокса
+                category_widget.checkbox.setChecked(name in current_selected)
+
+    def filter_categories(self, text: str) -> None:
+        """Фільтрує список категорій."""
+        for i in range(self.category_list.count()):
+            item = self.category_list.item(i)
+            widget = self.category_list.itemWidget(item)
+            if widget:
+                # Отримуємо текст категорії
+                category_text = widget.label.text().lower()
+                # Визначаємо, чи має бути видимим елемент
+                should_be_visible = text.lower() in category_text
+                # Встановлюємо видимість
+                item.setHidden(not should_be_visible)
+                
+                # Важливо: НЕ змінюємо стан чекбоксів тут
+                
+        visible_count = sum(1 for i in range(self.category_list.count()) if not self.category_list.item(i).isHidden())
+        self.status_bar.showMessage(f"Знайдено категорій: {visible_count}")
+
+    def on_category_selected(self, state: int, category: str) -> None:
+        """Обробляє вибір категорії."""
+        try:
+            category = category.strip()  # Очищаємо від пробілів
+            
+            if state == Qt.CheckState.Checked.value:
+                # Додаємо категорію до вибраних
+                self.selected_categories.add(category)
+            else:
+                # Видаляємо категорію з вибраних
+                self.selected_categories.discard(category)
+            
+            # Оновлюємо стан чекбоксу "Вибрати всі" без впливу на інші категорії
+            if len(self.selected_categories) == len(self.all_categories):
+                # Всі категорії вибрані - встановлюємо чекбокс, не змінюючи інші чекбокси
+                self.select_all_checkbox.blockSignals(True)  # Блокуємо сигнали
+                self.select_all_checkbox.setChecked(True)
+                self.select_all_checkbox.blockSignals(False)  # Розблоковуємо сигнали
+            else:
+                # Не всі категорії вибрані - знімаємо чекбокс, не змінюючи інші чекбокси
+                self.select_all_checkbox.blockSignals(True)  # Блокуємо сигнали
+                self.select_all_checkbox.setChecked(False)
+                self.select_all_checkbox.blockSignals(False)  # Розблоковуємо сигнали
+            
+            # Оновлюємо список вибраних категорій напряму
+            try:
+                self.selected_categories_list.clear()
+                for cat in sorted(self.selected_categories):
+                    if cat in self.all_categories:
+                        count = self.all_categories[cat].count
+                        self.selected_categories_list.addItem(f"{cat} ({count})")
+                    else:
+                        self.selected_categories_list.addItem(f"{cat}")
+            except Exception as e:
+                print(f"Помилка при оновленні списку вибраних категорій: {str(e)}")
+                
+            self.status_bar.showMessage(f"Вибрано категорій: {len(self.selected_categories)}")
+        except Exception as e:
+            print(f"Помилка при виборі категорії: {e}")
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+
+    window = XMLProcessor()
+    window.show()
+
+    sys.exit(app.exec())
