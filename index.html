@@ -1830,7 +1830,7 @@
                 { name: 'Пустий тег <brand>', items: results.emptyBrands },
                 { name: 'Пустий тег <vendor_code>', items: results.emptyVendorCodes },
                 { name: 'Категорії з забороненими символами (ы, ё, ъ)', items: results.invalidCategoryNames },
-                { name: 'Заборонені слова в code/title/vendor_code/barcode', items: results.forbiddenIdentifierWords.map(item => `${item.productId} (${item.field})`) },
+                { name: 'Уцінка, акція, рефаблішд товар', items: results.forbiddenIdentifierWords.map(item => `${item.productId} (${item.field})`) },
                 { name: 'Некоректні посилання в <picture>', items: results.invalidPictureLinks.map(item => `${item.productId}: ${item.url || '(порожній URL)'}`) },
                 { name: 'Некоректні посилання в описі (img src)', items: results.invalidDescriptionImages.map(item => `${item.productId}: ${item.url || '(порожній URL)'}`) }
             ];
