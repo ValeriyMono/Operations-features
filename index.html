@@ -904,6 +904,7 @@
         const imageDimensionCache = new Map();
         const imageDimensionPromises = new Map();
         const allowedImageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tif', '.tiff', '.avif', '.svg', '.heic'];
+        const forbiddenIdentifierWords = ['відновлений', 'sale', 'уцінка', 'акція', 'знижка', 'refublished'];
 
         fileInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
@@ -1293,7 +1294,9 @@
                         invalidPictureLinks: [],
                         invalidDescriptionImages: [],
                         pictureLinks: [],
-                        productIdentifiers: []
+                        productIdentifiers: [],
+                        invalidCategoryNames: [],
+                        forbiddenIdentifierWords: []
                     };
 
                     const uniqueValues = {
@@ -1311,6 +1314,7 @@
                         const offer = offers[i];
 
                         const productId = getElementTextContent(offer, 'id') || `Product_${i + 1}`;
+                        const cyrillicPattern = /[ыёъЫЁЪ]/;
 
                         checkUniqueness(offer, 'code', productId, uniqueValues.codes, results.duplicateCodes);
 
@@ -1321,7 +1325,8 @@
                         checkUniqueness(offer, 'barcode', productId, uniqueValues.barcodes, results.duplicateBarcodes);
 
                         const titleElement = offer.getElementsByTagName('title')[0];
-                        if (!titleElement || !titleElement.textContent.trim()) {
+                        const titleValue = titleElement ? titleElement.textContent.trim() : '';
+                        if (!titleElement || !titleValue) {
                             results.missingTitles.push(productId);
                         } else {
                             checkUniqueness(offer, 'title', productId, uniqueValues.titles, results.duplicateTitles);
@@ -1336,6 +1341,13 @@
                                 results.categories.set(categoryName, results.categories.get(categoryName) + 1);
                             } else {
                                 results.categories.set(categoryName, 1);
+                            }
+                            if (cyrillicPattern.test(categoryName)) {
+                                results.invalidCategoryNames.push(productId);
+                                logError('CATEGORY_INVALID_CHARS', `Товар ${productId} має заборонені символи (ы, ё, ъ) в <category>`, {
+                                    productId,
+                                    category: categoryName
+                                });
                             }
                         }
 
@@ -1406,6 +1418,8 @@
 
                         const codeElement = offer.getElementsByTagName('code')[0];
                         const codeValue = codeElement ? codeElement.textContent.trim() : '';
+                        const barcodeElement = offer.getElementsByTagName('barcode')[0];
+                        const barcodeValue = barcodeElement ? barcodeElement.textContent.trim() : '';
                         const idValue = productId.trim();
 
                         if (vendorCodeValue && (vendorCodeValue === idValue || vendorCodeValue === codeValue)) {
@@ -1423,15 +1437,17 @@
                             });
                         }
 
-                        const titleValue = titleElement ? titleElement.textContent.trim() : '';
+                        checkForbiddenWordsInField(productId, 'code', codeValue, results);
+                        checkForbiddenWordsInField(productId, 'vendor_code', vendorCodeValue, results);
+                        checkForbiddenWordsInField(productId, 'barcode', barcodeValue, results);
+                        checkForbiddenWordsInField(productId, 'title', titleValue, results);
+
                         results.productIdentifiers.push({
                             productId,
                             code: codeValue,
                             title: titleValue,
                             vendorCode: vendorCodeValue
                         });
-
-                        const cyrillicPattern = /[ыёъЫЁЪ]/;
 
                         if (titleElement) {
                             const titleText = titleElement.textContent;
@@ -1630,6 +1646,36 @@
                 .map(src => src.trim());
         }
 
+        function findForbiddenIdentifierWord(value) {
+            if (!value) return null;
+            const lowerValue = value.toLowerCase();
+            for (const word of forbiddenIdentifierWords) {
+                if (lowerValue.includes(word.toLowerCase())) {
+                    return word;
+                }
+            }
+            return null;
+        }
+
+        function checkForbiddenWordsInField(productId, fieldName, fieldValue, results) {
+            const matchedWord = findForbiddenIdentifierWord(fieldValue);
+            if (!matchedWord) return;
+
+            results.forbiddenIdentifierWords.push({
+                productId,
+                field: fieldName,
+                word: matchedWord,
+                value: fieldValue
+            });
+
+            logError('FORBIDDEN_IDENTIFIER_WORD', `Товар ${productId} містить заборонене слово "${matchedWord}" у полі <${fieldName}>`, {
+                productId,
+                field: fieldName,
+                value: fieldValue,
+                word: matchedWord
+            });
+        }
+
         function checkUniqueness(offer, tagName, productId, uniqueMap, resultArray) {
             const element = offer.getElementsByTagName(tagName)[0];
             if (element && element.textContent.trim()) {
@@ -1783,6 +1829,8 @@
                 { name: 'Параметри з довгими значеннями (>2000 символів)', items: results.longParamValues.map(p => p.productId) },
                 { name: 'Пустий тег <brand>', items: results.emptyBrands },
                 { name: 'Пустий тег <vendor_code>', items: results.emptyVendorCodes },
+                { name: 'Категорії з забороненими символами (ы, ё, ъ)', items: results.invalidCategoryNames },
+                { name: 'Заборонені слова в code/title/vendor_code/barcode', items: results.forbiddenIdentifierWords.map(item => `${item.productId} (${item.field})`) },
                 { name: 'Некоректні посилання в <picture>', items: results.invalidPictureLinks.map(item => `${item.productId}: ${item.url || '(порожній URL)'}`) },
                 { name: 'Некоректні посилання в описі (img src)', items: results.invalidDescriptionImages.map(item => `${item.productId}: ${item.url || '(порожній URL)'}`) }
             ];
