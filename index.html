@@ -1829,7 +1829,7 @@
                 { name: 'Параметри з довгими значеннями (>2000 символів)', items: results.longParamValues.map(p => p.productId) },
                 { name: 'Пустий тег <brand>', items: results.emptyBrands },
                 { name: 'Пустий тег <vendor_code>', items: results.emptyVendorCodes },
-                { name: 'Категорії з забороненими символами (ы, ё, ъ)', items: results.invalidCategoryNames },
+                { name: 'Категорії ру мовою', items: results.invalidCategoryNames },
                 { name: 'Уцінка, акція, рефаблішд товар', items: results.forbiddenIdentifierWords.map(item => `${item.productId} (${item.field})`) },
                 { name: 'Некоректні посилання в <picture>', items: results.invalidPictureLinks.map(item => `${item.productId}: ${item.url || '(порожній URL)'}`) },
                 { name: 'Некоректні посилання в описі (img src)', items: results.invalidDescriptionImages.map(item => `${item.productId}: ${item.url || '(порожній URL)'}`) }
@@ -1860,7 +1860,7 @@
                 { name: 'Некоректний символ & в бренді (потрібно &amp;)', items: results.invalidBrands },
                 { name: 'Некоректні або пусті теги <tags> (атрибути та значення товару)', items: results.invalidTags },
                 { name: 'Пусті описи (≤20 символів)', items: results.poorDescriptions },
-                { name: 'Заборонені символи (ы, ё, ъ) в <title>, <description>, <param name>', items: results.cyrillicIssues.map(c => c.productId) },
+                { name: 'Ру мова в <title>, <description>, <param name>', items: results.cyrillicIssues.map(c => c.productId) },
                 { name: 'Промо-фрази або телефони в <description>', items: results.promoInDescriptions.map(p => p.productId) }
             ];
 
