@@ -1480,22 +1480,22 @@
                             }
 
                             const promoWords = ['акція', 'акция', 'гарантія', 'гарантия', 'купити', 'купить', 'придбати', 'приобрести', 'на сайті', 'на сайте'];
-                            const phonePattern = /(\+?\d[\d\s\-()]{7,}\d)/g;
 
                             const descLower = descText.toLowerCase();
                             const foundPromoWords = promoWords.filter(word => descLower.includes(word));
-                            const foundPhones = descText.match(phonePattern);
+                            const uniquePromoWords = Array.from(new Set(foundPromoWords.map(word => word.toLowerCase())));
+                            const uniquePhones = findUkrainianPhoneNumbers(descText);
 
-                            if (foundPromoWords.length > 0 || foundPhones) {
+                            if (uniquePromoWords.length > 0 || uniquePhones.length > 0) {
                                 results.promoInDescriptions.push({
                                     productId,
-                                    promoWords: foundPromoWords,
-                                    phones: foundPhones || []
+                                    promoWords: uniquePromoWords,
+                                    phones: uniquePhones
                                 });
                                 logError('PROMO_IN_DESCRIPTION', `Товар ${productId} має промо-фрази або телефони в <description>`, {
                                     productId,
-                                    promoWords: foundPromoWords,
-                                    phones: foundPhones
+                                    promoWords: uniquePromoWords,
+                                    phones: uniquePhones
                                 });
                             }
 
@@ -1644,6 +1644,45 @@
                 .map(img => img.getAttribute('src'))
                 .filter(src => !!src && src.trim().length > 0)
                 .map(src => src.trim());
+        }
+
+        function findUkrainianPhoneNumbers(text) {
+            if (!text) return [];
+            const candidatePattern = /(\+?\d[\d\s\-()]{5,}\d)/g;
+            const uniquePhones = new Set();
+            const matches = [];
+            let match;
+
+            while ((match = candidatePattern.exec(text)) !== null) {
+                const rawPhone = match[0].trim();
+                const cleaned = rawPhone.replace(/[\s\-()]/g, '');
+                const hasPlus = cleaned.startsWith('+');
+                const digitsOnly = cleaned.replace(/\D/g, '');
+
+                if (!isUkrainianPhoneNumber(digitsOnly)) continue;
+
+                const key = (hasPlus ? '+' : '') + digitsOnly;
+                if (uniquePhones.has(key)) continue;
+
+                uniquePhones.add(key);
+                matches.push(rawPhone);
+            }
+
+            return matches;
+        }
+
+        function isUkrainianPhoneNumber(digitsOnly) {
+            if (!digitsOnly || digitsOnly.length < 7) return false;
+
+            if (digitsOnly.startsWith('380')) {
+                return digitsOnly.length >= 10 && digitsOnly.length <= 12;
+            }
+
+            if (digitsOnly.length >= 7 && digitsOnly.length <= 9) {
+                return digitsOnly.startsWith('0');
+            }
+
+            return false;
         }
 
         function findForbiddenIdentifierWord(value) {
@@ -1861,7 +1900,14 @@
                 { name: 'Некоректні або пусті теги <tags> (атрибути та значення товару)', items: results.invalidTags },
                 { name: 'Пусті описи (≤20 символів)', items: results.poorDescriptions },
                 { name: 'Ру мова в <title>, <description>, <param name>', items: results.cyrillicIssues.map(c => c.productId) },
-                { name: 'Промо-фрази або телефони в <description>', items: results.promoInDescriptions.map(p => p.productId) }
+                {
+                    name: 'Промо-фрази або телефони в <description>',
+                    items: results.promoInDescriptions.map(p => ({
+                        productId: p.productId,
+                        promoWords: p.promoWords || [],
+                        phones: p.phones || []
+                    }))
+                }
             ];
 
             generateMissingFieldsSection('Проблеми форматування', formattingIssues, 'warning');
@@ -2295,11 +2341,21 @@
                 field.items.forEach(item => {
                     const affectedItem = document.createElement('span');
                     affectedItem.className = 'affected-item';
-                    if (typeof item === 'string') {
-                        affectedItem.textContent = item;
-                    } else if (item.productId) {
-                        affectedItem.textContent = item.productId;
+                    let labelParts = [];
+                    if (typeof item === 'string' || typeof item === 'number') {
+                        labelParts.push(String(item));
+                    } else if (item && typeof item === 'object') {
+                        if (item.productId) {
+                            labelParts.push(item.productId);
+                        }
+                        if (Array.isArray(item.promoWords) && item.promoWords.length > 0) {
+                            labelParts.push(`слова: ${Array.from(new Set(item.promoWords)).join(', ')}`);
+                        }
+                        if (Array.isArray(item.phones) && item.phones.length > 0) {
+                            labelParts.push(`телефони: ${Array.from(new Set(item.phones)).join(', ')}`);
+                        }
                     }
+                    affectedItem.textContent = labelParts.length > 0 ? labelParts.join(' | ') : '(немає даних)';
                     affectedList.appendChild(affectedItem);
                 });
 
