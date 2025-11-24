@@ -109,6 +109,141 @@
             background-color: var(--neutral-200);
         }
 
+        .auth-controls {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .auth-btn,
+        .notifications-btn {
+            background: none;
+            border: 1px solid var(--neutral-300);
+            color: var(--neutral-700);
+            padding: 0.35rem 0.75rem;
+            border-radius: var(--radius);
+            cursor: pointer;
+            display: inline-flex;
+            gap: 0.35rem;
+            align-items: center;
+            transition: var(--transition);
+            font-size: 0.85rem;
+        }
+
+        .auth-btn:hover,
+        .notifications-btn:hover:not(:disabled) {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .notifications-btn {
+            position: relative;
+        }
+
+        .notifications-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .notifications-count {
+            position: absolute;
+            top: -6px;
+            right: -6px;
+            background-color: var(--error);
+            color: white;
+            font-size: 0.65rem;
+            min-width: 18px;
+            height: 18px;
+            border-radius: 999px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .user-badge {
+            display: none;
+            flex-direction: column;
+            border: 1px solid var(--neutral-200);
+            border-radius: var(--radius);
+            padding: 0.35rem 0.75rem;
+            font-size: 0.75rem;
+            background-color: white;
+            min-width: 140px;
+        }
+
+        .user-role-label {
+            font-weight: 600;
+            color: var(--primary);
+            margin-bottom: 0.25rem;
+        }
+
+        .logout-btn {
+            background: none;
+            border: none;
+            color: var(--error);
+            cursor: pointer;
+            text-align: left;
+            padding: 0;
+            font-size: 0.75rem;
+        }
+
+        .notifications-panel {
+            position: absolute;
+            top: 60px;
+            right: 0;
+            width: 320px;
+            background: white;
+            border: 1px solid var(--neutral-200);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-md);
+            display: none;
+            flex-direction: column;
+            z-index: 50;
+        }
+
+        .notifications-panel.visible {
+            display: flex;
+        }
+
+        .notifications-panel header {
+            padding: 0.75rem;
+            border-bottom: 1px solid var(--neutral-200);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .notifications-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .notification-item {
+            padding: 0.75rem;
+            border-bottom: 1px solid var(--neutral-100);
+        }
+
+        .notification-item.unread {
+            background-color: #fff7ed;
+        }
+
+        .notification-title {
+            font-weight: 600;
+            color: var(--neutral-800);
+        }
+
+        .notification-meta {
+            font-size: 0.75rem;
+            color: var(--neutral-500);
+            margin-top: 0.25rem;
+        }
+
+        .notification-empty {
+            padding: 1rem;
+            text-align: center;
+            color: var(--neutral-500);
+        }
+
         .upload-container {
             background-color: var(--neutral-50);
             padding: 2rem;
@@ -403,6 +538,14 @@
 
         .section-download-btn:hover {
             background: var(--primary-dark);
+        }
+
+        .section-download-btn.alert {
+            background: var(--accent);
+        }
+
+        .section-download-btn.alert:hover {
+            background: #ea580c;
         }
 
         .section-header-left {
@@ -768,9 +911,30 @@
                 <i class="fas fa-check-double"></i>
                 XML Feed Validator
             </div>
-            <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode">
-                <i class="fas fa-sun"></i>
-            </button>
+            <div class="auth-controls">
+                <button class="notifications-btn" id="notifications-button" disabled title="Нотифікації">
+                    <i class="fas fa-bell"></i>
+                    <span class="notifications-count" id="notifications-count" style="display:none;">0</span>
+                </button>
+                <div class="notifications-panel" id="notifications-panel" aria-live="polite">
+                    <header>
+                        <span>Нотифікації</span>
+                        <button class="auth-btn" id="mark-all-read-btn" style="font-size:0.75rem;">Позначити прочитаними</button>
+                    </header>
+                    <div class="notifications-list" id="notifications-list">
+                        <div class="notification-empty">Немає нових повідомлень</div>
+                    </div>
+                </div>
+                <button class="auth-btn" id="login-button">Увійти</button>
+                <div class="user-badge" id="user-badge">
+                    <span id="user-role-label" class="user-role-label"></span>
+                    <span id="user-email-label" class="user-email-label"></span>
+                    <button class="logout-btn" id="logout-button">Вийти</button>
+                </div>
+                <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode">
+                    <i class="fas fa-sun"></i>
+                </button>
+            </div>
         </header>
 
         <div class="upload-container">
@@ -854,6 +1018,83 @@
         </footer>
     </div>
 
+    <div class="modal" id="auth-modal" style="display:none;">
+        <div class="modal-content">
+            <button class="modal-close" id="close-auth-modal" aria-label="Закрити">
+                <i class="fas fa-times"></i>
+            </button>
+            <h3>Увійти до акаунта</h3>
+            <form id="auth-form">
+                <label>
+                    Email
+                    <input type="email" id="auth-email" required placeholder="name@example.com">
+                </label>
+                <label>
+                    Пароль
+                    <input type="password" id="auth-password" required placeholder="********">
+                </label>
+                <button type="submit" class="auth-btn" style="width:100%;justify-content:center;">Увійти</button>
+                <div class="form-hint">Акаунти створює адміністратор у Supabase.</div>
+                <div class="form-error" id="auth-error" style="display:none;color:var(--error);margin-top:0.5rem;"></div>
+            </form>
+        </div>
+    </div>
+
+    <style>
+        .modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.45);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 2rem;
+            border-radius: var(--radius-lg);
+            width: 100%;
+            max-width: 360px;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            box-shadow: var(--shadow-lg);
+        }
+
+        .modal-content label {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            font-size: 0.9rem;
+        }
+
+        .modal-content input {
+            padding: 0.5rem 0.75rem;
+            border-radius: var(--radius);
+            border: 1px solid var(--neutral-300);
+        }
+
+        .modal-close {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            background: none;
+            border: none;
+            font-size: 1.1rem;
+            cursor: pointer;
+        }
+
+        .form-hint {
+            font-size: 0.75rem;
+            color: var(--neutral-500);
+            text-align: center;
+        }
+    </style>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
         const themeToggle = document.getElementById('theme-toggle');
         const htmlElement = document.documentElement;
@@ -906,6 +1147,32 @@
         const allowedImageExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tif', '.tiff', '.avif', '.svg', '.heic'];
         const forbiddenIdentifierWords = ['відновлений', 'sale', 'уцінка', 'акція', 'знижка', 'refublished'];
 
+        const loginButton = document.getElementById('login-button');
+        const logoutButton = document.getElementById('logout-button');
+        const userBadge = document.getElementById('user-badge');
+        const userRoleLabel = document.getElementById('user-role-label');
+        const userEmailLabel = document.getElementById('user-email-label');
+        const authModal = document.getElementById('auth-modal');
+        const authForm = document.getElementById('auth-form');
+        const authError = document.getElementById('auth-error');
+        const closeAuthModalBtn = document.getElementById('close-auth-modal');
+        const notificationsButton = document.getElementById('notifications-button');
+        const notificationsCountBadge = document.getElementById('notifications-count');
+        const notificationsPanel = document.getElementById('notifications-panel');
+        const notificationsList = document.getElementById('notifications-list');
+        const markAllReadBtn = document.getElementById('mark-all-read-btn');
+
+        const SUPABASE_URL = window.SUPABASE_URL || 'https://mqhjfnrynbhuaboygfxs.supabase.co';
+        const SUPABASE_ANON_KEY = window.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1xaGpmbnJ5bmJodWFib3lnZnhzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM5MTQ5ODUsImV4cCI6MjA3OTQ5MDk4NX0.BccW8QZwFzyPiwy93WBVnnqNuJQunrdP6Af3lmtWqTY';
+        const supabaseClient = window.supabase?.createClient
+            ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+            : null;
+
+        let currentUser = null;
+        let currentUserRole = null;
+        let notificationsData = [];
+        let notificationsChannel = null;
+
         fileInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (file) {
@@ -934,6 +1201,58 @@
             });
         }
 
+        if (loginButton) {
+            loginButton.addEventListener('click', () => {
+                if (!supabaseClient) {
+                    alert('Supabase не налаштовано. Додайте URL та anon key.');
+                    return;
+                }
+                openAuthModal();
+            });
+        }
+
+        if (logoutButton) {
+            logoutButton.addEventListener('click', async () => {
+                if (!supabaseClient) return;
+                await supabaseClient.auth.signOut();
+            });
+        }
+
+        if (authForm) {
+            authForm.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                await handleAuthSubmit();
+            });
+        }
+
+        if (closeAuthModalBtn) {
+            closeAuthModalBtn.addEventListener('click', closeAuthModal);
+        }
+
+        if (notificationsButton) {
+            notificationsButton.addEventListener('click', () => {
+                if (!currentUser) {
+                    alert('Спершу увійдіть до системи.');
+                    return;
+                }
+                notificationsPanel.classList.toggle('visible');
+            });
+        }
+
+        if (markAllReadBtn) {
+            markAllReadBtn.addEventListener('click', markAllNotificationsAsRead);
+        }
+
+        document.addEventListener('click', (event) => {
+            if (
+                notificationsPanel &&
+                !notificationsPanel.contains(event.target) &&
+                event.target !== notificationsButton
+            ) {
+                notificationsPanel.classList.remove('visible');
+            }
+        });
+
         const picturePreviewHeader = document.querySelector('#picture-preview .section-header');
         if (picturePreviewToggle) {
             picturePreviewToggle.addEventListener('click', (e) => {
@@ -947,6 +1266,12 @@
                 if (e.target.closest('#picture-preview-toggle')) return;
                 togglePicturePreviewContent();
             });
+        }
+
+        if (supabaseClient) {
+            initializeAuth();
+        } else {
+            console.warn('Supabase SDK не ініціалізовано. Укажіть SUPABASE_URL та SUPABASE_ANON_KEY.');
         }
 
         function toggleAllSections(expand) {
@@ -1039,6 +1364,282 @@
                 return 'Розміри: недоступні';
             }
             return `Розміри: ${dimensions.width} × ${dimensions.height}px`;
+        }
+
+        async function initializeAuth() {
+            try {
+                const { data } = await supabaseClient.auth.getSession();
+                handleSessionChange(data.session);
+                supabaseClient.auth.onAuthStateChange((_event, session) => {
+                    handleSessionChange(session);
+                });
+            } catch (error) {
+                console.error('Supabase auth init error:', error);
+            }
+        }
+
+        async function handleSessionChange(session) {
+            currentUser = session?.user || null;
+            currentUserRole = null;
+
+            if (currentUser) {
+                userEmailLabel.textContent = currentUser.email || '';
+                currentUserRole = session?.user?.app_metadata?.role || null;
+                if (!currentUserRole) {
+                    await fetchUserProfile();
+                }
+                subscribeToNotifications();
+            } else {
+                userEmailLabel.textContent = '';
+                unsubscribeFromNotifications();
+                notificationsData = [];
+                renderNotifications();
+            }
+            updateAuthUI();
+        }
+
+        async function fetchUserProfile() {
+            if (!currentUser) return;
+            try {
+                const { data } = await supabaseClient
+                    .from('profiles')
+                    .select('role, display_name')
+                    .eq('id', currentUser.id)
+                    .single();
+                currentUserRole = data?.role || null;
+                if (data?.display_name) {
+                    userEmailLabel.textContent = `${data.display_name} (${currentUser.email || ''})`;
+                }
+            } catch (error) {
+                console.error('Не вдалося отримати профіль користувача', error);
+            }
+        }
+
+        function updateAuthUI() {
+            if (!loginButton || !userBadge) return;
+            if (currentUser) {
+                loginButton.style.display = 'none';
+                userBadge.style.display = 'flex';
+                userRoleLabel.textContent = currentUserRole
+                    ? `Роль: ${currentUserRole}`
+                    : 'Роль не визначена';
+                notificationsButton.disabled = false;
+            } else {
+                loginButton.style.display = 'inline-flex';
+                userBadge.style.display = 'none';
+                notificationsButton.disabled = true;
+                notificationsPanel.classList.remove('visible');
+                notificationsCountBadge.style.display = 'none';
+            }
+        }
+
+        function openAuthModal() {
+            if (authModal) {
+                authModal.style.display = 'flex';
+                authError.style.display = 'none';
+                authError.textContent = '';
+            }
+        }
+
+        function closeAuthModal() {
+            if (authModal) authModal.style.display = 'none';
+            if (authForm) authForm.reset();
+            if (authError) {
+                authError.style.display = 'none';
+                authError.textContent = '';
+            }
+        }
+
+        async function handleAuthSubmit() {
+            if (!supabaseClient) return;
+            const email = document.getElementById('auth-email').value.trim();
+            const password = document.getElementById('auth-password').value;
+
+            authError.style.display = 'none';
+            authError.textContent = '';
+
+            try {
+                const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+                if (error) throw error;
+                closeAuthModal();
+            } catch (error) {
+                authError.textContent = error.message || 'Помилка авторизації';
+                authError.style.display = 'block';
+            }
+        }
+
+        function unsubscribeFromNotifications() {
+            if (notificationsChannel) {
+                supabaseClient.removeChannel(notificationsChannel);
+                notificationsChannel = null;
+            }
+        }
+
+        function subscribeToNotifications() {
+            if (!currentUser || !currentUserRole) return;
+            unsubscribeFromNotifications();
+            loadNotifications();
+            notificationsChannel = supabaseClient
+                .channel('public:notifications')
+                .on(
+                    'postgres_changes',
+                    { event: '*', schema: 'public', table: 'notifications' },
+                    payload => {
+                        handleNotificationChange(payload.new);
+                    }
+                )
+                .subscribe();
+        }
+
+        function handleNotificationChange(newNotification) {
+            if (!shouldDisplayNotification(newNotification)) return;
+            notificationsData = [newNotification, ...notificationsData].slice(0, 25);
+            renderNotifications();
+        }
+
+        function shouldDisplayNotification(notification) {
+            if (!notification) return false;
+            if (currentUserRole === 'admin') return true;
+            if (notification.target_user && currentUser && notification.target_user === currentUser.id) {
+                return true;
+            }
+            return notification.target_role === currentUserRole;
+        }
+
+        async function loadNotifications() {
+            if (!currentUserRole) return;
+            try {
+                let query = supabaseClient
+                    .from('notifications')
+                    .select('*')
+                    .order('created_at', { ascending: false })
+                    .limit(25);
+
+                if (currentUserRole !== 'admin') {
+                    const filters = [];
+                    if (currentUser) filters.push(`target_user.eq.${currentUser.id}`);
+                    filters.push(`target_role.eq.${currentUserRole}`);
+                    query = query.or(filters.join(','));
+                }
+
+                const { data } = await query;
+                notificationsData = data || [];
+                renderNotifications();
+            } catch (error) {
+                console.error('Не вдалося отримати нотифікації', error);
+            }
+        }
+
+        function renderNotifications() {
+            if (!notificationsList) return;
+            notificationsList.innerHTML = '';
+            if (!notificationsData.length) {
+                const empty = document.createElement('div');
+                empty.className = 'notification-empty';
+                empty.textContent = 'Немає повідомлень для відображення';
+                notificationsList.appendChild(empty);
+                if (notificationsCountBadge) notificationsCountBadge.style.display = 'none';
+                return;
+            }
+
+            let unread = 0;
+            notificationsData.forEach(notification => {
+                if (!notification.is_read) unread++;
+
+                const item = document.createElement('div');
+                item.className = `notification-item ${notification.is_read ? '' : 'unread'}`;
+                const title = document.createElement('div');
+                title.className = 'notification-title';
+                title.textContent = notification.section || 'Новий запит';
+
+                const meta = document.createElement('div');
+                meta.className = 'notification-meta';
+                meta.textContent = [
+                    notification.partner ? `Партнер: ${notification.partner}` : null,
+                    notification.message
+                ].filter(Boolean).join(' • ') || 'Без деталей';
+
+                const actionBtn = document.createElement('button');
+                actionBtn.className = 'auth-btn';
+                actionBtn.style.marginTop = '0.5rem';
+                actionBtn.style.fontSize = '0.75rem';
+                actionBtn.textContent = notification.is_read ? 'Переглянуто' : 'Позначити прочитаним';
+                actionBtn.disabled = notification.is_read;
+                actionBtn.addEventListener('click', () => markNotificationAsRead(notification.id));
+
+                item.appendChild(title);
+                item.appendChild(meta);
+                item.appendChild(actionBtn);
+                notificationsList.appendChild(item);
+            });
+
+            if (notificationsCountBadge) {
+                if (unread > 0) {
+                    notificationsCountBadge.style.display = 'flex';
+                    notificationsCountBadge.textContent = unread;
+                } else {
+                    notificationsCountBadge.style.display = 'none';
+                }
+            }
+        }
+
+        async function markNotificationAsRead(notificationId) {
+            if (!supabaseClient || !currentUser) return;
+            if (!notificationId) return;
+            try {
+                await supabaseClient
+                    .from('notifications')
+                    .update({ is_read: true, read_at: new Date().toISOString() })
+                    .eq('id', notificationId);
+                notificationsData = notificationsData.map(item =>
+                    item.id === notificationId ? { ...item, is_read: true } : item
+                );
+                renderNotifications();
+            } catch (error) {
+                console.error('Не вдалося оновити нотифікацію', error);
+            }
+        }
+
+        async function markAllNotificationsAsRead() {
+            if (!supabaseClient || !currentUser) return;
+            const unreadIds = notificationsData.filter(n => !n.is_read).map(n => n.id);
+            if (unreadIds.length === 0) return;
+            try {
+                await supabaseClient
+                    .from('notifications')
+                    .update({ is_read: true, read_at: new Date().toISOString() })
+                    .in('id', unreadIds);
+                notificationsData = notificationsData.map(item => ({ ...item, is_read: true }));
+                renderNotifications();
+            } catch (error) {
+                console.error('Помилка при позначенні нотифікацій як прочитаних', error);
+            }
+        }
+
+        async function sendNotificationForSection(sectionTitle) {
+            if (!supabaseClient || !currentUser) {
+                alert('Для цього необхідно увійти.');
+                return;
+            }
+            if (currentUserRole !== 'account_manager' && currentUserRole !== 'admin') {
+                alert('Функція доступна лише акаунт-менеджеру.');
+                return;
+            }
+            const partner = prompt('Вкажіть партнера або примітку для аналітика:', '') || 'Невідомо';
+            try {
+                const { error } = await supabaseClient.from('notifications').insert({
+                    partner,
+                    section: sectionTitle,
+                    target_role: 'content_analyst',
+                    message: `Потрібно перевірити блок "${sectionTitle}"`,
+                    created_by: currentUser.id
+                });
+                if (error) throw error;
+                alert('Нотифікацію надіслано контент-аналітику.');
+            } catch (error) {
+                console.error('Не вдалося створити нотифікацію', error);
+                alert('Сталася помилка при створенні нотифікації.');
+            }
         }
 
         function exportReport() {
@@ -2086,6 +2687,7 @@
             header.innerHTML = '';
             leftContainer.appendChild(titleElement);
             leftContainer.appendChild(downloadBtn);
+            appendEscalateButton(leftContainer, sectionTitle, 'info', warnings.length);
             header.appendChild(leftContainer);
             header.appendChild(toggleElement);
 
@@ -2200,6 +2802,8 @@
             header.appendChild(leftContainer);
             header.appendChild(toggleElement);
 
+            appendEscalateButton(leftContainer, sectionTitle, 'error', duplicates.length);
+
             const issueList = document.createElement('ul');
             issueList.className = 'issue-list';
 
@@ -2294,6 +2898,8 @@
             leftContainer.appendChild(downloadBtn);
             header.appendChild(leftContainer);
             header.appendChild(toggleElement);
+
+            appendEscalateButton(leftContainer, sectionTitle, severity, totalItems);
 
             const issueList = document.createElement('ul');
             issueList.className = 'issue-list';
@@ -2411,6 +3017,27 @@
             section.appendChild(content);
 
             return section;
+        }
+
+        function canEscalateSection(issueCount, severity) {
+            if (!currentUserRole) return false;
+            if (!['account_manager', 'admin'].includes(currentUserRole)) return false;
+            if (!issueCount || issueCount <= 0) return false;
+            return severity === 'error' || severity === 'warning';
+        }
+
+        function appendEscalateButton(container, sectionTitle, severity, issueCount) {
+            if (!container) return;
+            if (!canEscalateSection(issueCount, severity)) return;
+            const escalateBtn = document.createElement('button');
+            escalateBtn.className = 'section-download-btn alert';
+            escalateBtn.innerHTML = '<i class="fas fa-bullhorn"></i>';
+            escalateBtn.title = 'Передати контент-аналітику';
+            escalateBtn.onclick = (event) => {
+                event.stopPropagation();
+                sendNotificationForSection(sectionTitle);
+            };
+            container.appendChild(escalateBtn);
         }
 
         function addSectionToggleListeners() {
