@@ -1627,12 +1627,11 @@
             }
             const partner = prompt('Вкажіть партнера або примітку для аналітика:', '') || 'Невідомо';
             try {
-                const { error } = await supabaseClient.from('notifications').insert({
-                    partner,
-                    section: sectionTitle,
-                    target_role: 'content_analyst',
-                    message: `Потрібно перевірити блок "${sectionTitle}"`,
-                    created_by: currentUser.id
+                const { error } = await supabaseClient.rpc('create_notification', {
+                    p_partner: partner,
+                    p_section: sectionTitle,
+                    p_message: `Потрібно перевірити блок "${sectionTitle}"`,
+                    p_target_role: 'content_analyst'
                 });
                 if (error) throw error;
                 alert('Нотифікацію надіслано контент-аналітику.');
