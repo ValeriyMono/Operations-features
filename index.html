@@ -1161,6 +1161,7 @@
         const notificationsPanel = document.getElementById('notifications-panel');
         const notificationsList = document.getElementById('notifications-list');
         const markAllReadBtn = document.getElementById('mark-all-read-btn');
+        const NOTIFICATIONS_POLL_MS = 30000;
 
         const SUPABASE_URL = window.SUPABASE_URL || 'https://mqhjfnrynbhuaboygfxs.supabase.co';
         const SUPABASE_ANON_KEY = window.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1xaGpmbnJ5bmJodWFib3lnZnhzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM5MTQ5ODUsImV4cCI6MjA3OTQ5MDk4NX0.BccW8QZwFzyPiwy93WBVnnqNuJQunrdP6Af3lmtWqTY';
@@ -1172,6 +1173,7 @@
         let currentUserRole = null;
         let notificationsData = [];
         let notificationsChannel = null;
+        let notificationsPollInterval = null;
 
         fileInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
@@ -1247,7 +1249,7 @@
             if (
                 notificationsPanel &&
                 !notificationsPanel.contains(event.target) &&
-                event.target !== notificationsButton
+                (!notificationsButton || !notificationsButton.contains(event.target))
             ) {
                 notificationsPanel.classList.remove('visible');
             }
@@ -1429,7 +1431,7 @@
                 userBadge.style.display = 'none';
                 notificationsButton.disabled = true;
                 notificationsPanel.classList.remove('visible');
-                notificationsCountBadge.style.display = 'none';
+                if (notificationsCountBadge) notificationsCountBadge.style.display = 'none';
             }
         }
 
@@ -1473,6 +1475,7 @@
                 supabaseClient.removeChannel(notificationsChannel);
                 notificationsChannel = null;
             }
+            clearNotificationsPolling();
         }
 
         function subscribeToNotifications() {
@@ -1488,7 +1491,13 @@
                         handleNotificationChange(payload.new);
                     }
                 )
-                .subscribe();
+                .subscribe((status) => {
+                    if (status === 'SUBSCRIBED') {
+                        startNotificationsPolling();
+                    } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+                        clearNotificationsPolling();
+                    }
+                });
         }
 
         function handleNotificationChange(newNotification) {
@@ -1527,6 +1536,21 @@
                 renderNotifications();
             } catch (error) {
                 console.error('Не вдалося отримати нотифікації', error);
+            }
+        }
+
+        function startNotificationsPolling() {
+            clearNotificationsPolling();
+            notificationsPollInterval = window.setInterval(() => {
+                if (!currentUser || !currentUserRole) return;
+                loadNotifications();
+            }, NOTIFICATIONS_POLL_MS);
+        }
+
+        function clearNotificationsPolling() {
+            if (notificationsPollInterval) {
+                window.clearInterval(notificationsPollInterval);
+                notificationsPollInterval = null;
             }
         }
 
